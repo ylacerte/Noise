@@ -1,0 +1,450 @@
+---
+title: "Airport Noise"
+format: html
+editor: visual
+---
+
+## Introduction
+
+Acoustic data was collected for several days near an airport. The quest was to understand the amount of noise emanating from this airport, and its impact on residents in the area.
+
+Herein, the collected data is analyzed and the total noise over a period of time is estimated.
+
+## References
+
+-   <https://www.flysfo.com/sites/default/files/Supplement_Aircraft_Noise_Terminology_Metric_0.pdf>
+
+-   <https://www.nonoise.org/epa%20index/roll17/roll17doc7.pdf>
+
+-   <https://eyw.com/admin/fm/source/6356_eyw1/pdfs/noise/12-Appendix-B-Aircraft-Noise.pdf>
+
+-   <https://www.faa.gov/documentLibrary/media/Order/FAA_Order_1050_1F.pdf>
+
+-   <https://www.flydenver.com/app/uploads/2023/09/den_Noise_Release_Study_2021_2026-1.pdf>
+
+-   <https://aedt.faa.gov/>
+
+-   <https://maps.dot.gov/BTS/NationalTransportationNoiseMap/>
+
+## What does the data look like
+
+A sample of the data is shown in the following graph. The axes are:
+
+-   Time stamp, every second for 1,000 seconds
+
+-   Sound Pressure Level (SPL). SPL measures the intensity of sound, expressed in decibels (dB). It is a logarithmic measure of the ratio of a sound pressure to a reference sound pressure.
+
+The following statistical levels are provided:
+
+-   **L90**: This sound level is exceeded 90% of the measurement time. It is frequently used as an indicator of background or ambient noise levels.
+
+-   **L50**: Represents the sound level that is exceeded 50% of the measurement time. It’s commonly employed in environmental noise studies to depict the median ambient noise level.
+
+-   **L10**: This is the sound level surpassed only 10% of the time, denoting louder noise events that occur less frequently in the environment.
+
+```{r setup, include=FALSE}
+#| echo: false
+
+library(plotly)
+library(lubridate)
+library(kableExtra)
+
+```
+
+```{r}
+#| echo: false
+fnm <- "C:\\Users\\ylace\\OneDrive\\Desktop\\STUFF\\Airport Noise\\data.csv"
+data <- read.csv(fnm)
+colnames(data) <- c("Time", "SPL")
+
+test.data <- data[1:1000,]
+test.data$Time <- 0:999 
+
+L10 <- quantile(test.data$SPL, probs = 0.1)
+L50 <- quantile(test.data$SPL, probs = 0.5)
+L90 <- quantile(test.data$SPL, probs = 0.9)
+
+plot_ly() %>%
+  add_trace(data=test.data, x=~Time, y=~SPL, 
+            type = "scatter", mode='lines', name = "raw data") %>%
+  add_trace(data=test.data, x=~Time, y=~L10, 
+            type = "scatter", mode='lines', name = "L10") %>%
+  add_trace(data=test.data, x=~Time, y=~L50, 
+            type = "scatter", mode='lines', name = "L50") %>%
+  add_trace(data=test.data, x=~Time, y=~L90, 
+            type = "scatter", mode='lines', name = "L90") %>%
+  layout(yaxis=list(title="SPL (dB)"))
+
+```
+
+## Noisy data
+
+There is lots of noise in the data. The Fast Fourier Transform (FFT) is used to de-noise the data. The algorithm is not trivial, but is implemented in many programming languages including R. The technique to identify and de-noise is as follows:
+
+-   FFT the data
+
+    -   Plot the signal magnitude.
+
+    -   Low signal magnitude is indicative of noise.
+
+    -   Zero a range of low magnitudes
+
+    -   Inverse FFT to get the de-noised data
+
+## De-noising based on signal magnitude
+
+We will de-noise the FFT results, i.e. FFT results are zeroed starting at 100.
+
+```{r}
+#| echo: false
+
+  fft_result <- fft(test.data$SPL)
+  df <- data.frame(time=1:nrow(test.data), 
+                   signal=test.data$SPL, 
+                   fft=fft_result, 
+                   magnitude=Mod(fft_result))
+
+```
+
+```{r}
+#| echo: false
+
+  fft_result[(500-400):(500+400)] <- 0 + 0i 
+
+p1 <-  plot_ly() %>%
+    add_trace(data=df[2:500,], x=~time, y=~magnitude, 
+              type = "scatter", mode='lines', name = "data",
+              showlegend=TRUE) %>%
+    add_trace(data=df[100:500,], x=~time, y=~magnitude, 
+              type = "scatter", mode='lines', name = "random noise",
+              showlegend=TRUE) %>%
+    layout(title="FFT applied on the data", 
+           xaxis=list(title=""))
+p1
+```
+
+```{r}
+#| echo: false
+
+  df$clean <- Mod(fft(fft_result, inverse = TRUE)) / nrow(df)
+  L10 <- quantile(df$clean, probs = 0.1)
+  L50 <- quantile(df$clean, probs = 0.5)
+  L90 <- quantile(df$clean, probs = 0.9)
+  
+p2 <-   plot_ly() %>%
+  add_trace(data=df, x=~time, y=~signal, name = "signal",
+      type = "scatter", mode='lines', line=list(width=5),
+      opacity=.2) %>%
+  add_trace(data=df, x=~time, y=~clean, name = "de-noised signal", 
+      type = "scatter", mode='lines' ) %>%
+    add_trace(data=df, x=~time, y=~L10, 
+            type = "scatter", mode='lines', name = "L10") %>%
+  add_trace(data=df, x=~time, y=~L50, 
+            type = "scatter", mode='lines', name = "L50") %>%
+  add_trace(data=df, x=~time, y=~L90, 
+            type = "scatter", mode='lines', name = "L90") %>%
+
+  layout(title="Reconstructed data after de-noising")
+p2
+  
+```
+
+## PSD
+
+The power spectral density (PSD) is the measure of signal's power content versus frequency. The graph shows the impact on PSD after de-noising.
+
+```{r}
+#| echo: false
+
+    fft_result <- fft(test.data$SPL)
+    sp1 <- spectrum(fft_result,plot=FALSE)
+    df1 <- data.frame(x=sp1$freq, y=sp1$spec)
+
+  # remove noise
+    rng <- c(500-400, 500+400) # denoise Range
+    new_fft_result <- fft_result 
+    new_fft_result[rng[1]:rng[2]] <- 0 + 0i 
+    sp2 <- spectrum(new_fft_result,plot=FALSE)
+    df2 <- data.frame(x=sp2$freq, y=sp2$spec)
+ 
+  plot_ly() %>%
+    add_trace(data=df1[c(-1,-2),], x=~x, y=~y, name='raw',
+              type = "scatter", mode='lines') %>%
+    add_trace(data=df2[c(-1,-2),], x=~x, y=~y, name='de-noised',
+              type = "scatter", mode='lines') %>%
+    layout(xaxis=list(title="frequency (Hz)"),
+           yaxis=list(title="spectral density (dB/Hz)"))
+
+```
+
+## Regions of activity
+
+Operating with the de-noised data, we are looking for peaks of maximum noise, and the region around each of these peaks.
+
+A peak is a point where the value is greater than its immediate neighbors (left and right). Peaks also need to be far enough apart, i.e. several seconds apart from each other. Merge peaks that are too close to each other.
+
+A region starts and ends around a peak when it reaches a lower threshold. The width of the region is where it crosses the lower threshold on both sides. The region may not cross the lower threshold, on one side or both sides. In this case, find the closest point(s) to the lower threshold. The peak is noise if its region is not wide enough.
+
+The following graphs show the progression from points to peaks to regions.
+
+Each region represents the movement of a single aircraft (approximately). A region represents the time span from when it is first heard to the time it is no longer heard. For landings, it is approximately from final approach to aircraft idling. For departures, the time starts at take off.
+
+```{r}
+#| echo: false
+
+    fft_result <- fft(test.data$SPL)
+
+  # remove noise
+    rng <- c(500-400, 500+400) # denoise Range
+    new_fft_result <- fft_result 
+    new_fft_result[rng[1]:rng[2]] <- 0 + 0i 
+    
+    cleanData <- data.frame(
+      time=1:1000, 
+      signal= Mod(fft(new_fft_result, inverse = TRUE)) / length(new_fft_result))
+    
+    
+closePeaks <- function(what, flag) {
+# find all peaks above the threshold
+# march along the time line from point to point
+# flag points that occur within 'flag' seconds of each other
+# do a pair wise comparison and discard the lower one
+
+    peaks <- what
+    diff <- c(0, diff(peaks$time,lag=1))
+    peaks$diff <- diff
+
+    discard <- data.frame()
+    for ( i in 2:nrow(peaks) ) {
+      peak.pair <- rbind(peaks[i-1,], peaks[i,])
+      if ( peak.pair$diff[2] <= flag) {
+        out  <- peak.pair[which(peak.pair$signal < max(peak.pair$signal)),]
+        ndx  <- which(peaks$time == out$time)
+        temp <- data.frame(out=out, ndx=ndx)
+        discard <- rbind(discard,temp)
+      }
+    }
+  if ( nrow(discard) > 0 ) return(peaks[-discard$ndx,])
+  else { return(peaks) }
+}
+
+```
+
+```{r}
+#| echo: false
+
+plot_ly() %>%
+      add_trace(data=cleanData, 
+                x=~time, y=~signal, name="smoothed data", 
+                type='scatter', mode='lines',
+                line=list(width=4), opacity=.1,
+                showlegend=TRUE) %>%
+      add_trace(data=cleanData, 
+                x=~time, y=L90, name="L90",
+                type='scatter', mode='lines',
+                line=list(dash="dot"),
+                showlegend=FALSE) %>%
+      add_trace(data=cleanData, 
+                x=~time, y=L50, name="L50",
+                type='scatter', mode='lines',
+                line=list(dash="dot"),
+                showlegend=FALSE)  %>%
+      add_trace(data=cleanData[which(cleanData$signal > L90),], 
+                x=~time, y=~signal, name="points above L90",
+                type='scatter', mode='markers',
+                showlegend=TRUE) 
+
+```
+
+```{r}
+#| echo: false
+
+  all.points <- cleanData[which(cleanData$signal > L90),]
+  peaks <- closePeaks(what = all.points, flag = 1)
+  for ( i in 2:18 ) {
+     peaks <- closePeaks(what = peaks, flag = i)
+  }
+
+
+plot_ly() %>%
+      add_trace(data=cleanData, 
+                x=~time, y=~signal, name="smoothed data", 
+                type='scatter', mode='lines',
+                line=list(width=4), opacity=.1,
+                showlegend=TRUE) %>%
+      add_trace(data=cleanData, 
+                x=~time, y=L90, name="L90",
+                type='scatter', mode='lines',
+                line=list(dash="dot"),
+                showlegend=FALSE) %>%
+      add_trace(data=cleanData, 
+                x=~time, y=L50, name="L50",
+                type='scatter', mode='lines',
+                line=list(dash="dot"),
+                showlegend=FALSE)  %>%
+      add_trace(data=peaks, 
+                x=~time, y=~signal, name="peaks",
+                type='scatter', mode='markers',
+                marker=list(size=22),
+                showlegend=TRUE) 
+
+```
+
+```{r}
+#| echo: false
+
+  threshold <- L50
+  
+  list.regions <- list()
+  for ( i in 1:nrow(peaks) ) {
+      peak <- peaks[i,]
+
+      rng <- c(peak$time-50, peak$time, peak$time+50)
+      if ( rng[1] <= 0 ) rng[1] <- 1
+      if ( rng[3] >= nrow(cleanData) ) rng[3] <- nrow(cleanData)
+      leftW  <- cleanData[rng[1]:(rng[2]),]
+      rightW <- cleanData[(rng[2]):rng[3],]
+
+      ndx <- which(leftW$signal <= threshold)
+      if ( length(ndx) > 0 ) { 
+        ndx.l <- ndx[length(ndx)] 
+        left <- leftW[ndx.l,]
+      } else { 
+        left <- leftW[which.min(leftW$signal),] 
+      }
+  
+      ndx <- which(rightW$signal <= threshold)
+      if ( length(ndx) > 0 ) { 
+        ndx.r <- ndx[1] 
+        right <- rightW[ndx.r,]
+      } else { 
+        right <- rightW[which.min(rightW$signal),] 
+      }
+      region.range <- c(which(left$time == cleanData$time),
+                       which(right$time == cleanData$time))
+      region <- cleanData[region.range[1]:region.range[2],]
+      list.regions[[i]] <- region
+  }
+
+```
+
+```{r}
+#| echo: false
+
+p <- plot_ly() %>%
+      add_trace(data=cleanData, 
+                x=~time, y=~signal, name="smoothed data", 
+                type='scatter', mode='lines',
+                line=list(width=4), opacity=.1,
+                showlegend=TRUE) %>%
+      add_trace(data=cleanData, name="L90",
+                x=~time, y=L90, 
+                type='scatter', mode='lines',
+                line=list(dash="dot"),
+                showlegend=FALSE) %>%
+      add_trace(data=cleanData, 
+                x=~time, y=L50, name="L50",
+                type='scatter', mode='lines',
+                line=list(dash="dot"),
+                showlegend=FALSE)  %>%
+      add_trace(data=peaks, 
+                x=~time, y=~signal, name="regions",
+                type='scatter', mode='markers',
+                marker=list(size=22),
+                showlegend=TRUE) 
+
+for ( i in 1:length(list.regions) ) {
+  p <- p %>%
+      add_trace(data=list.regions[[i]], 
+                x=~time, y=~signal, name="region",
+                type='scatter', mode='lines', fill = 'toself',
+                showlegend=FALSE) 
+  
+}
+
+p
+
+```
+
+## Sound Exposure Level
+
+The Maximum Sound Level (Lmax) represents the highest instantaneous noise level heard during a single aircraft overflight. This is represented by the tallest peak. While some people will be annoyed by events having shorter duration, majority of people are more likely to be highly annoyed with longer events continuing for extended period of time.
+
+To account for differing durations of an event, Sound Exposure Level (SEL) is used to quantify total noise exposure for a single aircraft movement. Since a region represents an aircraft movement. SEL is a function of the area of a region. The equation is:
+
+$$
+SEL = 10*log_{10}(\sum_{i=1}^n 10^{{L_i}/10})
+$$
+
+where:
+
+-   $L_i$ is the sound level for one second
+
+-   n is the number of seconds of a region
+
+```{r}
+#| echo: false
+SEL <- function(region) {
+  energy <- data.frame()
+  for (j in 1:nrow(region)) {
+    L <- 10^(region$signal[j]/10)
+    energy <- rbind(energy, L)
+  }
+  return(10*log10(sum(energy)))
+}
+
+SEL.values <- data.frame()
+for ( i in 1:length(list.regions) ) {
+    region <- list.regions[[i]]
+    start <- region$time[1]
+    end <- region$time[nrow(region)]
+    duration <- end-start
+    Lmax.ndx <- which.max(region$signal)
+    Lmax <- region$signal[Lmax.ndx]
+    Lmax.time <- region$time[Lmax.ndx]
+    temp <- data.frame(region=i, 
+                       start=start,
+                       end=end,
+                       duration=duration,
+                       Lmax=Lmax,
+                       Lmax.time=Lmax.time,
+                       SEL=SEL(region))
+   SEL.values <- rbind(SEL.values, temp)
+}
+SEL.values %>% kbl() %>% kable_paper("hover", full_width = FALSE)
+```
+
+## Day Night Average Sound Level
+
+The Day Night Average Sound Level (DNL) is the 24-hour average sound level, in decibels, for the period from midnight to midnight, obtained after the addition of ten decibels to sound levels for the periods between midnight and 7 a.m., and between 10 p.m., and midnight, local time.
+
+DNL takes into account both the amount of noise from each aircraft operation as well as the total number of operations flying throughout the day. Because of the increased sensitivity to noise during normal sleeping hours and because ambient (without aircraft) sound levels during nighttime are typically about 10 dB lower than during daytime hours, the 10-decibel adjustment, or "penalty," represents the added intrusiveness of sounds occurring during nighttime hours.
+
+For aviation noise analyses, the FAA has determined that the cumulative noise energy exposure of individuals to noise resulting from aviation activities must be established in terms of Yearly Day Night Average Sound Level (DNL), the FAA’s primary noise metric. The DNL metric is calculated as follows: $$
+DNL = 10*log_{10}(Day+Evening+Night)/24
+$$
+
+Where
+
+-   $Day = \sum_{07:00}^{22:00} 10^{{L_i}/10}$ ,
+
+-   $Evening = \sum_{22:00}^{24:00} 10^{{(L_i +10)}/10}$ ,
+
+-   $Night = \sum_{00:00}^{07:00} 10^{{(L_i+10)}/10}$
+
+-   $i$ is the ith flight
+
+-   $L_i$ is the sound level for one second
+
+## Noise contours
+
+Noise metric results like DNL are drawn on maps in terms of lines connecting points of the same decibel (dBA), similar to topographical maps showing the elevation of terrain in an area.
+
+The FAA's Aviation Environmental Design Tool [(AEDT)]{.smallcaps} is a computer model that uses aircraft operations data, correlated with known acoustical information for each type of aircraft, to calculate noise contours.
+
+![Projected (2026) noise contours (55, 60, and 65 DNL) for the Denver international airport (https://www.flydenver.com/app/uploads/2023/09/den_Noise_Release_Study_2021_2026-1.pdf)](DEN.png){width="700"}
+
+![Noise levels at airports in the Denver area (https://maps.dot.gov/BTS/NationalTransportationNoiseMap/)](CO-2.png)
+
+This post was written with R Quarto, an open-source scientific and technical
+publishing system. The code is available at�<https://github.com/ylacerte/Noise>
